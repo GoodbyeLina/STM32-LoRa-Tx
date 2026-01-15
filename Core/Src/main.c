@@ -93,6 +93,25 @@ int fputc(int ch, FILE *f)
   return ch;
 }
 
+/**
+ *	@breif CRC16 校验算法
+ */
+uint16_t Calculate_CRC16(uint8_t *ptr, uint16_t len) {
+    uint16_t crc = 0xFFFF;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= ptr[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) {
+                crc >>= 1;
+                crc ^= 0xA001; // MODBUS 多项式
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -173,7 +192,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 		/* 1. GPS 异步解析（必须实时调用） */
-//    GPS_Process();
+    GPS_Process();
+		
 #if 1
 
     /* 2. 定时任务：每 500ms 采集一次数据并打印 */
@@ -241,9 +261,12 @@ int main(void)
 				tx_packet.gyro_z = myData.Gyro_Z;
 				tx_packet.latitude    = g_gpsData.latitude;
 				tx_packet.longitude   = g_gpsData.longitude;
-
+			
 				// VOFA+ JustFloat 帧尾固定值
 				tx_packet.tail = 0x7F800000; 
+
+				// 3. 计算 CRC (校验范围：除了 crc16 和 tail 之外的所有 float 数据，共 10*4 = 40 字节)
+				tx_packet.crc16 = Calculate_CRC16((uint8_t*)&tx_packet, sizeof(float) * 10);
 
 				// 发送整个结构体
 				LoRa_Send((uint8_t*)&tx_packet, sizeof(LoRa_Packet_t)); 

@@ -26,6 +26,7 @@ typedef struct {
     float latitude;
     float longitude;
     // VOFA+ 专用帧尾：0x00 0x00 0x80 0x7F
+	  uint16_t crc16;    // 新增：用于存放前面 40 字节数据的校验值
     uint32_t tail; 
 } LoRa_Packet_t;
 #pragma pack()
