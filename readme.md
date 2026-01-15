@@ -1,4 +1,5 @@
-git init---
+## 相关项目
+- [接收端 (Rx) 仓库](https://github.com/GoodbyeLina/STM32-LoRa-Rx)
 
 # STM32 多传感器集成开发项目日志 (2026-01-03)
 
