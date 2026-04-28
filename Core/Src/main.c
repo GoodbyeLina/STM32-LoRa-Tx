@@ -1,4 +1,5 @@
 /* USER CODE BEGIN Header */
+
 /**
   ******************************************************************************
   * @file           : main.c
@@ -19,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "i2c.h"
+#include "rtc.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -27,7 +29,7 @@
 #include "stdio.h"
 #include "string.h"
 #include <mpu6050.h>
-#include "gps.h"
+#include "rtk.h"
 #include "aht20.h"
 #include "bmp280.h"
 #include "lora.h"
@@ -62,7 +64,7 @@ BMP280_Data_t bmpData;
 uint32_t weather_timer = 0;
 
 uint8_t uart1_rx_byte[1];
-uint8_t uart2_rx_byte[1];
+// uint8_t uart2_rx_byte[1];  // 已废弃, RTK 使用自有缓冲区
 uint8_t uart3_rx_byte[1];
 
 
@@ -147,6 +149,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
   MX_USART3_UART_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 	
 	
@@ -173,8 +176,8 @@ int main(void)
 	}
 	HAL_Delay(500);
 
-	// 初始化 GPS 
-	GPS_Init();
+		// 初始化 RTK (UM982)
+	RTK_Init();
 
 
 	uint32_t sensor_tick = 0;
@@ -191,8 +194,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-		/* 1. GPS 异步解析（必须实时调用） */
-    GPS_Process();
+				/* 1. RTK 异步解析（必须实时调用） */
+    RTK_Process();
 		
 #if 1
 
@@ -218,9 +221,7 @@ int main(void)
         
 			
 				//
-//			printf("GPS: %d, long: %f, lati: %f", g_gpsData.is_valid, g_gpsData.longitude, g_gpsData.latitude);
-			
-        // GPS 的打印已经在 GPS_Process() 内部通过 printf 实现了
+        // RTK 的打印已经在 RTK_Process() 内部通过 printf 实现了
         printf("=========================\r\n");
 #endif 
 
@@ -259,19 +260,23 @@ int main(void)
 				tx_packet.gyro_x = myData.Gyro_X;
 				tx_packet.gyro_y = myData.Gyro_Y;
 				tx_packet.gyro_z = myData.Gyro_Z;
-				tx_packet.latitude    = g_gpsData.latitude;
-				tx_packet.longitude   = g_gpsData.longitude;
+								tx_packet.latitude    = (float)g_rtkData.latitude;
+								tx_packet.longitude   = (float)g_rtkData.longitude;
+								tx_packet.altitude    = g_rtkData.altitude;
+								tx_packet.hdop        = g_rtkData.hdop;
+								tx_packet.fix_type    = (uint8_t)g_rtkData.fix_type;
+								tx_packet.satellites  = g_rtkData.satellites;
 			
 				// VOFA+ JustFloat 帧尾固定值
 				tx_packet.tail = 0x7F800000; 
 
-				// 3. 计算 CRC (校验范围：除了 crc16 和 tail 之外的所有 float 数据，共 10*4 = 40 字节)
-				tx_packet.crc16 = Calculate_CRC16((uint8_t*)&tx_packet, sizeof(float) * 10);
+								// 3. 计算 CRC (覆盖 crc16 之前的所有数据)
+				tx_packet.crc16 = Calculate_CRC16((uint8_t*)&tx_packet, LORA_DATA_SIZE);
 
 				// 发送整个结构体
-				LoRa_Send((uint8_t*)&tx_packet, sizeof(LoRa_Packet_t)); 
+				LoRa_Send((uint8_t*)&tx_packet, LORA_PACKET_SIZE); 
 
-				printf("[System] binary databag sended (%d bytes)\r\n", sizeof(LoRa_Packet_t));
+				printf("[System] binary databag sended (%d bytes)\r\n", LORA_PACKET_SIZE);
 		}
 	}
   /* USER CODE END 3 */
@@ -285,13 +290,15 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
@@ -314,6 +321,12 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /* USER CODE BEGIN 4 */
@@ -322,6 +335,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		if(huart->Instance == USART1){
 			HAL_UART_Transmit(&huart3, uart1_rx_byte, 1, 10);
 			HAL_UART_Receive_IT(&huart1, uart1_rx_byte, 1);
+				} else if (huart->Instance == USART2){
+			// RTK (UM982) 数据接收
+			RTK_RxCallback(huart);
 		} else if (huart->Instance == USART3){
 			HAL_UART_Transmit(&huart1, uart3_rx_byte, 1, 10);
 			HAL_UART_Receive_IT(&huart3, uart3_rx_byte, 1);		
